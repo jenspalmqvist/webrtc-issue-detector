@@ -79,8 +79,12 @@ their own CPU still gets the issue on their own device.
   `npm run lint:tests` clean, plan and code committed on the branch.
 - [x] (2026-09-04 11:10Z) Independent Codex review of the diff `c21f383..HEAD`. Two findings: an
   absolute local path in Concrete Steps exposed an account name (accepted, removed); the 3 second
-  poll guidance was called wrong (refuted, see Decision Log; wording clarified). Remaining: push on
-  approval, pull request.
+  poll guidance was called wrong (refuted, see Decision Log; wording clarified).
+- [x] (2026-09-04 11:30Z) Push and pull request, on the user's approval. Upstream refused the push
+  (no write access), so the branch went to the fork `jenspalmqvist/webrtc-issue-detector` (git
+  remote `fork`) and the pull request was opened from there against upstream `master`:
+  https://github.com/VLprojects/webrtc-issue-detector/pull/49, closing upstream issue #48 (the
+  user's bug report). Remaining: the optional manual check in Validation, and the upstream review.
 
 ## Surprises & Discoveries
 
