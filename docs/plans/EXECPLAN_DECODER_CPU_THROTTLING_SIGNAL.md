@@ -85,6 +85,15 @@ their own CPU still gets the issue on their own device.
   remote `fork`) and the pull request was opened from there against upstream `master`:
   https://github.com/VLprojects/webrtc-issue-detector/pull/49, closing upstream issue #48 (the
   user's bug report). Remaining: the optional manual check in Validation, and the upstream review.
+- [x] (2026-09-04 13:40Z) Browser validation in a consumer's local video stack (the web app's
+  development container, its signalling backend, a mediasoup SFU on the host with simulcast),
+  with this branch's build copied into the web app's container. Seven runs, results in Artifacts
+  and Notes. Passed: healthy call silent on Chrome and
+  Firefox; one sender capped to 300 kbit/s gives the receivers a 3 to 9 fps wobble and nobody
+  reports; a receiver whose stats show a 40 percent shortfall at 33 ms per frame reports alone, on
+  Chrome and on Firefox; leave and rejoin resets the history; machine-wide CPU overload fires the
+  other detectors and not this one. Remaining: a real single-client decoder shortfall (needs a
+  slow machine), the hardware-decode path in a browser, Safari, and the upstream review.
 
 ## Surprises & Discoveries
 
@@ -206,6 +215,33 @@ their own CPU still gets the issue on their own device.
   statements (`no-restricted-syntax`). Found by the second independent Claude review with
   `eslint --print-config`.
   Consequence: the detector uses index loops or array methods such as `every` and `some`.
+- Observation: through a mediasoup SFU every receiver holds an extra inbound video
+  stream with ssrc 1234 that never receives a frame. It is mediasoup's bandwidth probe. The
+  detector never evaluates it (`deltaReceived` stays 0), but `affectedStreamsPercent` divides by
+  `data.video.inbound.length`, which counts it. Found in the local browser runs of 2026-09-04.
+  Evidence: two affected streams out of two real ones reported `affectedStreamsPercent: 66.667`.
+  Consequence: the ratio reads low by one stream on every mediasoup receiver. It cannot create a
+  false positive. It can hide a true one when only one real stream is received, because 1 of 2 is
+  50 percent, above the 30 percent default, but 1 of 3 real streams plus the probe is 25 percent.
+  Left as a follow-up; see the Decision Log.
+- Observation: Firefox 146 exposes every field the detector reads (`totalDecodeTime`,
+  `framesDecoded`, `framesReceived`, `packetsReceived`, `packetsLost`, `jitter`,
+  `framesPerSecond`) but neither `powerEfficientDecoder` nor `decoderImplementation`. Found in
+  the local browser runs of 2026-09-04 with Playwright's Firefox build.
+  Evidence: the inbound-rtp report keys captured from `RTCRtpReceiver.getStats()` on Firefox.
+  Consequence: the hardware-decode skip never applies on Firefox. A Firefox user with hardware
+  decoding can reach the demand gates on pipeline latency alone. Documented as a limitation; see
+  the Decision Log.
+- Observation: Chrome DevTools CPU throttling and a Web Worker CPU burner do not starve the video
+  decoder on an Apple silicon machine. Throttling slows the page's main thread only; the burner
+  saturates every core, so every participant's encoder starves and the SFU loses its RabbitMQ
+  connection before any receiver shows a decode shortfall.
+  Evidence: under twenty spinning workers on ten cores, the burner's own receiver decoded 480p VP8
+  at 0.5 ms per frame with under 1 percent frames dropped, while every participant reported
+  `encoder-cpu-throttling` and `frozen-video-track` and the burner reported 13 percent inbound
+  packet loss.
+  Consequence: the positive path was validated with a `getStats` shim on one receiver (see the
+  Decision Log), and the real single-client reproduction still needs a slow machine.
 
 ## Decision Log
 
@@ -419,6 +455,28 @@ their own CPU still gets the issue on their own device.
   Rationale: CI uses Node 24. The locally installed Node 26 cannot start mocha. Node 22 also works,
   but 24 matches CI.
   Date/Author: 2026-09-04, plan author.
+- Decision: validate the positive path in a real call with a shim on `RTCRtpReceiver.getStats()`
+  of one participant, which reports `framesDecoded` at 60 percent of `framesReceived` and
+  `totalDecodeTime` at 33 ms per decoded frame, with `powerEfficientDecoder: false`. Every other
+  participant keeps real stats.
+  Rationale: the library calls `receiver.getStats()` and iterates the report with `forEach`, so a
+  `Map` with edited inbound-rtp entries exercises the parser, the detector, the frontend's
+  `onIssues` path, and the SSRC identity key exactly as a real shortfall would. The only part it
+  does not exercise is the browser's decoder, which this machine cannot starve.
+  Date/Author: 2026-09-04, plan author, during the browser validation.
+- Decision: leave the `affectedStreamsPercent` denominator as `data.video.inbound.length` on this
+  branch and record the probe-stream miscount as a follow-up.
+  Rationale: the miscount lowers the ratio and cannot create a false positive, and the pull request
+  is already open for review. Counting only evaluated streams is a behaviour change with its own
+  test and its own review. Do it in a separate change with a fixture that holds a stream with
+  zero received frames.
+  Date/Author: 2026-09-04, plan author, after the browser validation.
+- Decision: document that the hardware-decode skip needs `powerEfficientDecoder`, which Firefox
+  does not report, and do not add a Firefox-specific rule.
+  Rationale: there is no field on Firefox that tells hardware from software decoding. Any
+  substitute, such as a decode-time floor, would also silence a real software decoder. The
+  limitation belongs in the README next to the single-layer limitation.
+  Date/Author: 2026-09-04, plan author, after the browser validation.
 
 ## Outcomes & Retrospective
 
@@ -429,8 +487,13 @@ six skip rules, legacy payload preserved), `powerEfficientDecoder?: boolean` add
 builder and 22 tests, README section replaced. Measured against the Purpose: the wobble reproduction
 fails on the old code and passes on the new one, so the false positive this plan exists to remove is
 gone. The true positive is covered for streams with temporal layers or SVC and not for single-layer
-streams, as documented. No browser run was performed in this session; the optional manual check in
-Validation is still open and should be done in a staging call before the release is relied on.
+streams, as documented. The branch build then ran in a consumer's local video stack for seven
+browser runs (see Artifacts and Notes). The false positive is gone in a real call: a sender capped
+to 300 kbit/s gives every receiver the old wobble and no receiver reports. The positive path, the
+per-connection history reset, and Firefox field coverage passed. Two gaps remain: the positive path
+was driven by a stats shim because this machine cannot starve its decoder, and the hardware-decode
+skip has only unit tests. Two follow-ups came out of the runs: mediasoup's probe stream is counted
+in `affectedStreamsPercent`, and Firefox has no `powerEfficientDecoder`.
 
 Lessons. Six review rounds on the plan made the build a single pass: the suite went green on the
 first run and lint needed one indentation fix. The two rounds that read libwebrtc source found the
@@ -944,6 +1007,12 @@ Expected: no output after the script banners.
   `decoder-cpu-throttling` appears. In a peer-to-peer call with a single-layer codec the detector
   stays silent under the same CPU burner; that is the documented limitation, not a defect.
 
+Status of the manual check on 2026-09-04: the uplink throttle part passed in a consumer's local
+video stack with a sender bitrate cap in place of a network shaper. The CPU burner part could not be
+produced on an Apple silicon machine, so the positive path was checked with a stats shim instead;
+the shim, the stack, and the results are in Artifacts and Notes. The unattached-track and the
+peer-to-peer parts were not run.
+
 ## Artifacts and Notes
 
 Milestone 1 checkpoint, observed 2026-09-04 with the committed detector (`c21f383`) and only the
@@ -977,6 +1046,45 @@ The sixth call fires with the predicted series, volatility, and share. Note for 
 nested `npx mocha` inside `npx -p node@24 -c '...'` fails with `npm error code EUSAGE`; call
 `node_modules/.bin/mocha` directly, as above. Each run through the Node 24 wrapper takes two to
 three minutes on this machine, so run it in the background.
+
+### Browser validation in a consumer's local video stack, 2026-09-04
+
+Stack: the consumer web app's development container (Create React App on Node 22), with this
+branch's `dist/` and `package.json` copied over the container's
+`node_modules/webrtc-issue-detector` and the dev server restarted; the signalling backend in its
+container; a mediasoup SFU as a host process with VP8 first and simulcast on; a development
+room that needs no token. Participants were driven with `playwright-core` from the
+web app's `node_modules`, launching the installed Google Chrome with
+`--use-fake-device-for-media-stream` and `--use-fake-ui-for-media-stream`, one browser context per
+participant, and Playwright's Firefox 146 build headless with `media.navigator.streams.fake`,
+`media.navigator.permission.disabled`, and `media.peerconnection.ice.loopback` set. Firefox only
+connects when the SFU announces the machine's LAN address instead of 127.0.0.1. The web app's
+`getStatsInterval` is 5000 ms, so the detector's first verdict comes after about 20 to 25 s. The
+web app logs every issue as `GOT WEBRTC ISSUE`; the runs collected those from each page.
+
+| Run | Setup | Result |
+|---|---|---|
+| Healthy call | 3 Chrome participants, 60 s, real stats, libvpx at 0.34 ms per frame | no issues on any participant |
+| Sender cap | alpha's three simulcast encodings capped to 100 kbit/s each for 90 s | receivers saw alpha at 3 to 9 fps with a wobble on every sample; no issues on any participant |
+| Shim on one receiver | charlie's `getStats` reports 40 percent shortfall at 33 ms per frame, 90 s | charlie reports `decoder-cpu-throttling` every 20 s; alpha and bravo silent |
+| Leave and rejoin | charlie with the shim leaves and rejoins from a fresh page | nothing in the first 18 s after the rejoin; first report at 21 s with the new SSRCs; others silent |
+| Machine overload | 6 participants; one runs 20 spinning workers on 10 cores plus 20x main-thread throttling | every participant reports encoder throttling, frozen tracks, network issues; no `decoder-cpu-throttling` anywhere; the SFU lost RabbitMQ and exited |
+| Firefox, real stats | Chrome sender and receiver, Firefox receiver, 45 s | no decoder issue; all required fields present on Firefox |
+| Firefox, shim | shim on the Firefox receiver, 60 s | Firefox reports `decoder-cpu-throttling`; the Chrome participants silent |
+
+One report from the shim run, as the frontend logged it (stream list shortened):
+
+```
+cpu/decoder-cpu-throttling {"decodeDemand":1.319,"frameShortfallPct":40,"windowMs":25016,
+  "affectedStreamsPercent":66.667,
+  "evaluatedStreams":[{"ssrc":504583121,"decodeDemand":0.66,"avgDecodeTimeMs":33,
+    "arrivalFps":19.987,"decodedFps":11.992,"shortfallPct":40,"packetLossPct":0,"jitterMs":0,
+    "allFps":[20,20,20,20,20],"volatility":0}, …],
+  "throttledStreams":[…], "throtthedStreams":[…]}
+```
+
+The 66.667 is two affected streams over three inbound entries; the third is mediasoup's probe
+stream (ssrc 1234), see Surprises & Discoveries.
 
 ## Interfaces and Dependencies
 
@@ -1153,3 +1261,13 @@ Changes made while executing the plan, all detail-level:
 - The three milestones landed in one commit, because Milestone 1's state (spec failing against the
   old detector) is a checkpoint, not a shippable state, and the commit message in Milestone 3
   describes the whole change.
+
+## Revision note 7 (2026-09-04, after the browser validation)
+
+Living sections updated with the local browser runs: a Progress entry, three observations (the
+mediasoup probe stream in the `affectedStreamsPercent` denominator, Firefox without
+`powerEfficientDecoder`, and why CPU throttling and a burner cannot starve the decoder on this
+machine), three decisions (validate the positive path with a `getStats` shim, leave the
+denominator for a follow-up, document the Firefox limitation), a status paragraph under the manual
+check in Validation, a results table in Artifacts and Notes, and a rewritten closing of Outcomes &
+Retrospective. No code changed in this revision.
