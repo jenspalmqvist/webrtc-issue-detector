@@ -127,7 +127,10 @@ at most 5 poll intervals; if you poll faster than every 3 seconds, raise `maxPar
 on this detector so the window can reach that span. It reads `id`,
 `timestamp`, `framesReceived`, `framesDecoded`, `totalDecodeTime`, `packetsReceived`,
 `packetsLost`, and `jitter` from the inbound video stats and stays silent on a browser that omits
-any of them. A remote sender that lowers its frame rate does not trigger this issue.
+any of them. Firefox reports all of them but not `powerEfficientDecoder`, so the hardware-decode
+exclusion does not apply there and a Firefox receiver that decodes in hardware can reach the demand
+thresholds on pipeline latency alone. A remote sender that lowers its frame rate does not trigger
+this issue.
 `volatilityThreshold` is accepted but has no effect since the frame rate volatility signal was
 removed.
 ```js

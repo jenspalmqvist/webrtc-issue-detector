@@ -94,6 +94,9 @@ their own CPU still gets the issue on their own device.
   Chrome and on Firefox; leave and rejoin resets the history; machine-wide CPU overload fires the
   other detectors and not this one. Remaining: a real single-client decoder shortfall (needs a
   slow machine), the hardware-decode path in a browser, Safari, and the upstream review.
+- [x] (2026-09-04 14:05Z) README: the Firefox `powerEfficientDecoder` limitation added to the
+  `### VideoDecoderIssueDetector` section, next to the required-fields sentence. Plan and README
+  pushed to the fork branch behind pull request #49 on the user's instruction.
 
 ## Surprises & Discoveries
 
