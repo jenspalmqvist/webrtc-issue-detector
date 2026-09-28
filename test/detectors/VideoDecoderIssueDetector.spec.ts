@@ -21,7 +21,7 @@ interface StreamFixture {
   decodedFps?: number | number[];
   droppedFps?: number;
   decodeMsPerFrame: number;
-  packetLossPct?: number;
+  packetLossPct?: number | number[];
   jitterMs?: number;
   powerEfficientDecoder?: boolean;
   resetAtSample?: number;
@@ -85,7 +85,7 @@ const createInboundStream = (
     counters.framesDropped += (stream.droppedFps ?? 0) * intervalSec;
     counters.totalDecodeTime += (decoded * stream.decodeMsPerFrame) / 1000;
     counters.packetsReceived += packetsReceived;
-    counters.packetsLost += Math.round((packetsReceived * (stream.packetLossPct ?? 0)) / 100);
+    counters.packetsLost += Math.round((packetsReceived * perInterval(stream.packetLossPct ?? 0, k)) / 100);
   }
 
   const idSuffix = stream.newIdAtSample !== undefined && sampleIndex >= stream.newIdAtSample ? '-r' : '';
@@ -272,6 +272,17 @@ describe('wid/detectors/VideoDecoderIssueDetector', () => {
     const scores = samples.map(() => ({ inbound: 3.5 } as NetworkScores));
 
     expect(runDetector(new VideoDecoderIssueDetector(), samples, scores)).to.deep.eq(emptyResults(6));
+  });
+
+  it('excludes a stream whose new loss is hidden by late packets that fill older gaps', () => {
+    const { A, B, C } = ssrcs();
+    const samples = createSamples({
+      count: 6,
+      streams: [{ ...overloaded(A), packetLossPct: [-10, -10, 10, 10, 10] }, healthy(B), healthy(C)],
+      baseline: { packetsLost: 100 },
+    });
+
+    expect(runDetector(new VideoDecoderIssueDetector(), samples)).to.deep.eq(emptyResults(6));
   });
 
   it('excludes a stream without packet counters', () => {

@@ -234,7 +234,11 @@ class VideoDecoderIssueDetector extends BaseIssueDetector {
     const deltaDecoded = newest.framesDecoded - oldest.framesDecoded;
     const deltaReceived = newest.framesReceived - oldest.framesReceived;
     const deltaPacketsReceived = newest.packetsReceived - oldest.packetsReceived;
-    const deltaPacketsLost = Math.max(newest.packetsLost - oldest.packetsLost, 0);
+    // sum only the increases, so late packets that fill older gaps cannot hide new loss in the window
+    let deltaPacketsLost = 0;
+    for (let i = 1; i < series.length; i += 1) {
+      deltaPacketsLost += Math.max(series[i].packetsLost - series[i - 1].packetsLost, 0);
+    }
 
     if (deltaTimeMs < this.#minWindowMs || deltaReceived < this.#minFramesReceived || deltaDecoded === 0) {
       return undefined;

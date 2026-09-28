@@ -97,6 +97,11 @@ their own CPU still gets the issue on their own device.
 - [x] (2026-09-04 14:05Z) README: the Firefox `powerEfficientDecoder` limitation added to the
   `### VideoDecoderIssueDetector` section, next to the required-fields sentence. Plan and README
   pushed to the fork branch behind pull request #49 on the user's instruction.
+- [x] (2026-09-28) Copilot review of pull request #49. Two findings, both accepted. The pull request
+  description still said that no browser run was done; the description now summarises the browser
+  validation. The loss delta used only the two end samples, so late packets that filled older gaps
+  could hide new loss; the detector now sums the increases between adjacent samples. One test
+  added, `59 passing`, both linters clean.
 
 ## Surprises & Discoveries
 
@@ -163,7 +168,8 @@ their own CPU still gets the issue on their own device.
   signed and libwebrtc decrements it when a late or retransmitted packet fills a gap, so consecutive
   samples can show a decrease on a link with reordering or NACK recovery. Found by the first
   independent Claude review.
-  Consequence: `packetsLost` is excluded from the monotonic check and its delta is clamped at zero.
+  Consequence: `packetsLost` is excluded from the monotonic check, and the loss in the window is the
+  sum of the increases between adjacent samples (see the Decision Log entry from the Copilot review).
 - Observation: Chrome decodes each receive stream on its own decode thread. A sum of per-stream
   decode demand therefore grows with the participant count on an idle multi-core machine; twelve
   thumbnails at 2 ms per frame and 30 fps already sum to 0.72. Found by the first independent
@@ -474,6 +480,13 @@ their own CPU still gets the issue on their own device.
   test and its own review. Do it in a separate change with a fixture that holds a stream with
   zero received frames.
   Date/Author: 2026-09-04, plan author, after the browser validation.
+- Decision: count the loss in the window as the sum of the increases in `packetsLost` between
+  adjacent samples, not as `max(newest - oldest, 0)`.
+  Rationale: a decrease means that a late packet filled a gap. When the gap opened before the
+  window, the decrease cancels real new loss inside the window, and a loss-caused shortfall passes
+  the gate. The sum of increases can count a late-filled gap as loss, which excludes the stream
+  more often. For a gate that protects against false positives, that is the safe direction.
+  Date/Author: 2026-09-28, after the Copilot review of pull request #49.
 - Decision: document that the hardware-decode skip needs `powerEfficientDecoder`, which Firefox
   does not report, and do not add a Firefox-specific rule.
   Rationale: there is no field on Firefox that tells hardware from software decoding. Any
@@ -588,7 +601,7 @@ example `'IT01V' + ssrc`), `ssrc`, `timestamp` (`sampleIndex * intervalMs`), `fr
 `framesDecoded`, `framesDropped`, `totalDecodeTime` (in seconds, so
 `framesDecodedThisInterval * decodeMsPerFrame / 1000` accumulated), `packetsReceived` (two packets
 per received frame), `packetsLost` (per interval `Math.round(packetsReceivedThisInterval *
-packetLossPct / 100)`, accumulated), `jitter` (`jitterMs / 1000`), and `framesPerSecond` equal to
+packetLossPct / 100)`, accumulated; `packetLossPct` can be one value per interval), `jitter` (`jitterMs / 1000`), and `framesPerSecond` equal to
 the decoded fps of the interval that ends at this sample (for sample 0, of interval 1).
 `framesPerSecond` exercises the current code in the reproduction test and feeds the legacy `allFps`
 field in the new code. Set no `frameWidth` and `frameHeight`. Build each sample as
@@ -663,7 +676,8 @@ interface VideoDecoderIssueDetectorParams extends BaseIssueDetectorParams {
    pair of adjacent entries. `packetsLost` and `jitter` are deliberately not checked.
 4. Skip the stream if the newest entry has `powerEfficientDecoder === true`.
 5. Compute the deltas newest minus oldest: `deltaTimeMs`, `deltaDecodeTimeSec`, `deltaDecoded`,
-   `deltaReceived`, `deltaPacketsReceived`, and `deltaPacketsLost = max(newest - oldest, 0)`. Skip
+   `deltaReceived`, and `deltaPacketsReceived`. Compute `deltaPacketsLost` as the sum of
+   `max(packetsLost[i] - packetsLost[i - 1], 0)` over adjacent entries. Skip
    the stream if `deltaTimeMs < minWindowMs`, if `deltaReceived < minFramesReceived`, or if
    `deltaDecoded === 0`.
 6. Compute `packetLossPct = deltaPacketsLost / (deltaPacketsLost + deltaPacketsReceived) * 100` (0
@@ -984,7 +998,8 @@ Expected: no output after the script banners.
 
 ## Validation and Acceptance
 
-- `npx -y -p node@24 -c 'npm test'` reports `58 passing` and `0 failing`.
+- `npx -y -p node@24 -c 'npm test'` reports `59 passing` and `0 failing` (58 before the Copilot
+  review added the late-packet loss test).
 - The Milestone 1 checkpoint was observed and recorded: with the committed detector and only the
   wobble test in the spec, the suite reports `1 failing` with that test's name. This is the "fails
   before" evidence; reverting the detector after Milestone 2 does not work because the later tests
@@ -1274,3 +1289,11 @@ machine), three decisions (validate the positive path with a `getStats` shim, le
 denominator for a follow-up, document the Firefox limitation), a status paragraph under the manual
 check in Validation, a results table in Artifacts and Notes, and a rewritten closing of Outcomes &
 Retrospective. No code changed in this revision.
+
+## Revision note 8 (2026-09-28, after the Copilot review of pull request #49)
+
+The loss delta changed from the two end samples to the sum of adjacent increases, with one new test,
+"excludes a stream whose new loss is hidden by late packets that fill older gaps". The fixture's
+`packetLossPct` accepts one value per interval. Updated: Progress, the `packetsLost` observation in
+Surprises, the Decision Log, step 5 of the detector algorithm, the fixture description, and the
+expected test count in Validation. The pull request description now records the browser validation.
